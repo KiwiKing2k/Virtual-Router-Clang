@@ -38,15 +38,15 @@ int is_valid_l2_packet(struct ether_hdr* eth_hdr, size_t interface)
     {
         return 1;
     }
-    for (int i=0; i<6;i++)
+    //lets print eth_hdr->ethr_dhost
+    printf("Received packet with destination MAC: ");
+    for (int i = 0; i < 6; i++)
     {
-        printf("0x%1x ", eth_hdr->ethr_dhost[i]);
+        printf("%02x", eth_hdr->ethr_dhost[i]);
+        if (i < 5)
+            printf(":");
     }
     printf("\n");
-    for (int i=0; i<6;i++)
-    {
-        printf("0x%1x ", interface_mac[i]);
-    }
     printf("MAC adress not for me\n");
     return 0;
 }
@@ -268,8 +268,7 @@ int main(int argc, char* argv[])
 
     // reading routing table and making a trie
     struct node* root = create_node();
-    struct route_table_entry* rtable = malloc(sizeof(struct route_table_entry) * MAX_RTABLE_LEN);
-    rtable_len=read_rtable(*argv, rtable);
+    rtable_len=read_rtable(argv[1], rtable);
     printf("Routing table length: %d\n", rtable_len);
     for (int i = 0; i < rtable_len; i++)
     {
@@ -294,6 +293,8 @@ int main(int argc, char* argv[])
 
         if (!is_valid_l2_packet(eth_hdr, interface)) exit(EXIT_FAILURE);
 
+        printf("Received packet on interface %zu\n", interface);
+
         if (ntohs(eth_hdr->ethr_type) != IPV4_ETHERTYPE)
         {
             printf("Ignored non-IPv4 packet, EtherType: 0x%04x\n", ntohs(eth_hdr->ethr_type));
@@ -304,7 +305,7 @@ int main(int argc, char* argv[])
 
         uint32_t router_ip = inet_addr(get_interface_ip(interface));
         printf("Received router IP: %x\n", router_ip);
-        printf("Interface ip: %x\n", ip_hdr->dest_addr);
+        printf("Destination Interface ip: %x\n", ip_hdr->dest_addr);
         if (ip_hdr->dest_addr == router_ip)
         {
             // Call the handle_icmp function
@@ -325,7 +326,10 @@ int main(int argc, char* argv[])
         struct route_table_entry* linear_match = linear_best_match(ip_hdr->dest_addr);
 
         printf("Lin match is %d , %u\n", linear_match->interface, linear_match->next_hop);
-        printf("LPM match is %d , %u\n", match->interface, match->next_hop);
+        printf("Aici mere?\n");
+        /*printf("LPM match is %d , %u\n", match->interface, match->next_hop);*/
+
+        printf("Ajungem aici?");
 
         if (match->next_hop != linear_match->next_hop)
         {
