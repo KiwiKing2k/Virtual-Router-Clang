@@ -89,14 +89,14 @@ void handle_icmp_echo(char* buf, size_t len, size_t interface)
         icmp_hdr->mtype = 0; // Type 0 Echo Reply
         icmp_hdr->mcode = 0;
         icmp_hdr->check = 0;
-        icmp_hdr->check = htons(checksum((uint16_t*)icmp_hdr, len - sizeof(struct ether_hdr) - sizeof(struct ip_hdr)));
+        icmp_hdr->check = htons(checksum((uint16_t*)icmp_hdr, sizeof(struct icmp_hdr)));
         printf("Checksum in echo reply");
         // Update IP header
         uint32_t temp_ip = ip_hdr->source_addr;
         ip_hdr->source_addr = ip_hdr->dest_addr;
         ip_hdr->dest_addr = temp_ip;
         ip_hdr->checksum = 0;
-        ip_hdr->checksum = htons(checksum((uint16_t*)ip_hdr, ip_hdr->ihl * 4));
+        ip_hdr->checksum = htons(checksum((uint16_t*)ip_hdr, sizeof(struct ip_hdr)));
         printf("Updated IP header");
         // Update Ethernet header
         uint8_t temp_mac[6];
@@ -275,17 +275,18 @@ void insert_trie(struct node* root, struct route_table_entry* entry)
 
     for (int i = 31; i >= 0; i--)
     {
+        if ((mask & (1 << i)) == 0)
+        {
+            //checking if we reach the end of the mask
+            break;
+        }
         int bit = (prefix >> i) & 1;
         if (curr->children[bit] == NULL)
         {
             curr->children[bit] = create_node();
         }
         curr = curr->children[bit];
-        if ((mask & (1 << i)) == 0)
-        {
-            //checking if we reach the end of the mask
-            break;
-        }
+
     }
     curr->entry = entry;
 }
@@ -294,13 +295,19 @@ struct route_table_entry* lpm(struct node* root, uint32_t ip)
 {
     struct node* curr = root;
     struct route_table_entry* best_entry = NULL;
+    ip = ntohl(ip);
 
     for (int i = 31; i >= 0; i--)
     {
         int bit = (ip >> i) & 1;
         if (curr->children[bit] == NULL)
         {
-            break;
+            if (curr->entry != NULL)
+            {
+                best_entry = curr->entry;
+                // if no children then this must be the best entry
+                break;
+            }
         }
         curr = curr->children[bit];
         if (curr->entry != NULL)
@@ -386,12 +393,13 @@ int main(int argc, char* argv[])
         if (match == NULL)
         {
             printf("No match found in by lpm\n");
-            match = linear_match;
+            /*match = linear_match;*/
+            handle_host_unreachable(buf, len, interface);
         }
         if (linear_match == NULL)
         {
             printf("No match found in by linear search\n");
-            handle_host_unreachable(buf, len, interface);
+            /*handle_host_unreachable(buf, len, interface);*/
             continue;
         }
         /*printf("Lin match is %d , next hop: %u\n", linear_match->interface, linear_match->next_hop);
