@@ -17,6 +17,7 @@ int mac_table_len;
 
 #define MAX_RTABLE_LEN 100000
 #define IPV4_ETHERTYPE 0x0800
+#define ARP_ETHERTYPE 0x0806
 #define MIN_ETH_HDR_LEN 14
 #define MIN_IP_HDR_LEN 20
 #define MIN_ICMP_HDR_LEN 8
@@ -361,11 +362,15 @@ int main(int argc, char* argv[])
 
         printf("Received packet on interface %zu\n", interface);
 
+        if (ntohs(eth_hdr->ethr_type) == ARP_ETHERTYPE)
+        {
+            // arp
+        }
         if (ntohs(eth_hdr->ethr_type) != IPV4_ETHERTYPE)
         {
             printf("Ignored non-IPv4 packet, EtherType: 0x%04x\n", ntohs(eth_hdr->ethr_type));
-            continue;
         }
+
 
         //check if it is for me
 
@@ -392,8 +397,7 @@ int main(int argc, char* argv[])
 
         if (match == NULL)
         {
-            printf("No match found in by lpm\n");
-            /*match = linear_match;*/
+            printf("No match found in by lpm lololo\n");
             handle_host_unreachable(buf, len, interface);
         }
         if (linear_match == NULL)
@@ -402,12 +406,10 @@ int main(int argc, char* argv[])
             /*handle_host_unreachable(buf, len, interface);*/
             continue;
         }
-        /*printf("Lin match is %d , next hop: %u\n", linear_match->interface, linear_match->next_hop);
-        printf("LPM match is %d , next hop:  %u\n", match->interface, match->next_hop);*/
 
         struct in_addr next_hop_addr;
         next_hop_addr.s_addr = match->next_hop;
-        printf("Lin match is %d , next hop: %s\n", linear_match->interface, inet_ntoa(*(struct in_addr*)&linear_match->next_hop));
+        printf("LIN match is %d , next hop: %s\n", linear_match->interface, inet_ntoa(*(struct in_addr*)&linear_match->next_hop));
         printf("LPM match is %d , next hop: %s\n", match->interface, inet_ntoa(next_hop_addr));
 
         //arp to be implemented
