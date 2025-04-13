@@ -151,7 +151,7 @@ void handle_ttl_exceeded(char* buf, size_t len, size_t interface)
     new_icmp_hdr->check = checksum((uint16_t*)new_icmp_hdr, sizeof(struct icmp_hdr) + sizeof(struct ip_hdr) + 8);
 
     if (send_to_link(sizeof(struct ether_hdr) + sizeof(struct ip_hdr) + sizeof(struct icmp_hdr) + sizeof(struct ip_hdr) + 8, (char*)new_buf
-        , interface) < 0)
+                     , interface) < 0)
     {
         exit(EXIT_FAILURE);
     }
@@ -196,7 +196,7 @@ void handle_host_unreachable(char* buf, size_t len, size_t interface)
     new_icmp_hdr->check = checksum((uint16_t*)new_icmp_hdr, sizeof(struct icmp_hdr) + sizeof(struct ip_hdr) + 8);
 
     if (send_to_link(sizeof(struct ether_hdr) + sizeof(struct ip_hdr) + sizeof(struct icmp_hdr) + sizeof(struct ip_hdr) + 8, (char*)new_buf
-        , interface) < 0)
+                     , interface) < 0)
     {
         exit(EXIT_FAILURE);
     }
@@ -287,7 +287,6 @@ void insert_trie(struct node* root, struct route_table_entry* entry)
             curr->children[bit] = create_node();
         }
         curr = curr->children[bit];
-
     }
     curr->entry = entry;
 }
@@ -307,8 +306,8 @@ struct route_table_entry* lpm(struct node* root, uint32_t ip)
             {
                 best_entry = curr->entry;
                 // if no children then this must be the best entry
-                break;
             }
+            break;
         }
         curr = curr->children[bit];
         if (curr->entry != NULL)
@@ -318,6 +317,35 @@ struct route_table_entry* lpm(struct node* root, uint32_t ip)
         }
     }
     return best_entry;
+}
+
+void handle_arp_message(size_t len, size_t interface, char* buf)
+{
+    struct arp_hdr* arp_header = (struct arp_hdr*)(buf + sizeof(struct ether_hdr));
+    if (ntohs(arp_header->opcode) == 1)
+    {
+        //request
+        uint8_t mac[6];
+        get_interface_mac(interface, mac);
+        // now send reply
+        arp_header->opcode = htons(2);
+        memcpy(arp_header->thwa, arp_header->shwa, 6);
+        memcpy(arp_header->shwa, mac, 6);
+
+        uint8_t cup = arp_header->tprotoa;
+        arp_header->tprotoa = arp_header->sprotoa;
+        arp_header->sprotoa = cup;
+        // 2 values 1 cup
+
+        struct ether_hdr* ether_header = (struct ether_hdr*)buf;
+        memcpy(ether_header->ethr_dhost, ether_header->ethr_shost, 6);
+        memcpy(ether_header->ethr_shost, mac, 6);
+        if (send_to_link(len, buf, interface)<0) exit(EXIT_FAILURE);
+    }
+    else
+    {
+        //reply
+    }
 }
 
 int main(int argc, char* argv[])
@@ -364,7 +392,7 @@ int main(int argc, char* argv[])
 
         if (ntohs(eth_hdr->ethr_type) == ARP_ETHERTYPE)
         {
-            // arp
+            // handle_arp
         }
         if (ntohs(eth_hdr->ethr_type) != IPV4_ETHERTYPE)
         {
@@ -399,6 +427,7 @@ int main(int argc, char* argv[])
         {
             printf("No match found in by lpm lololo\n");
             handle_host_unreachable(buf, len, interface);
+            continue;
         }
         if (linear_match == NULL)
         {
