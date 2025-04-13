@@ -87,15 +87,16 @@ void handle_icmp_echo(char* buf, size_t len, size_t interface)
     if (icmp_hdr->mtype == 8)
     {
         icmp_hdr->mtype = 0; // Type 0 Echo Reply
+        icmp_hdr->mcode = 0;
         icmp_hdr->check = 0;
-        icmp_hdr->check = checksum((uint16_t*)icmp_hdr, len - sizeof(struct ether_hdr) - sizeof(struct ip_hdr));
+        icmp_hdr->check = htons(checksum((uint16_t*)icmp_hdr, len - sizeof(struct ether_hdr) - sizeof(struct ip_hdr)));
         printf("Checksum in echo reply");
         // Update IP header
         uint32_t temp_ip = ip_hdr->source_addr;
         ip_hdr->source_addr = ip_hdr->dest_addr;
         ip_hdr->dest_addr = temp_ip;
         ip_hdr->checksum = 0;
-        ip_hdr->checksum = checksum((uint16_t*)ip_hdr, ip_hdr->ihl * 4);
+        ip_hdr->checksum = htons(checksum((uint16_t*)ip_hdr, ip_hdr->ihl * 4));
         printf("Updated IP header");
         // Update Ethernet header
         uint8_t temp_mac[6];
@@ -134,10 +135,10 @@ void handle_ttl_exceeded(char* buf, size_t len, size_t interface)
     new_ip_hdr->frag = htons(0);
     new_ip_hdr->ttl = 64;
     new_ip_hdr->proto = IPPROTO_ICMP;
-    new_ip_hdr->source_addr = *(uint32_t*)get_interface_ip(interface);
+    new_ip_hdr->source_addr = inet_addr(get_interface_ip(interface));
     new_ip_hdr->dest_addr = ip_hdr->source_addr;
     new_ip_hdr->checksum = 0;
-    new_ip_hdr->checksum = checksum((uint16_t*)new_ip_hdr, sizeof(struct ip_hdr));
+    new_ip_hdr->checksum = htons(checksum((uint16_t*)new_ip_hdr, sizeof(struct ip_hdr)));
 
     //update ICMP header
     new_icmp_hdr->mtype = 11; // Time Exceeded
@@ -148,8 +149,53 @@ void handle_ttl_exceeded(char* buf, size_t len, size_t interface)
 
     new_icmp_hdr->check = checksum((uint16_t*)new_icmp_hdr, sizeof(struct icmp_hdr) + sizeof(struct ip_hdr) + 8);
 
-    if (send_to_link(interface, (char*)new_buf,
-                     sizeof(struct ether_hdr) + sizeof(struct ip_hdr) + sizeof(struct icmp_hdr) + sizeof(struct ip_hdr) + 8) < 0)
+    if (send_to_link(sizeof(struct ether_hdr) + sizeof(struct ip_hdr) + sizeof(struct icmp_hdr) + sizeof(struct ip_hdr) + 8, (char*)new_buf
+        , interface) < 0)
+    {
+        exit(EXIT_FAILURE);
+    }
+    printf("Sent ICMP Time Exceeded error\n");
+}
+
+void handle_host_unreachable(char* buf, size_t len, size_t interface)
+{
+    uint8_t new_buf[MAX_PACKET_LEN];
+    struct ether_hdr* eth_hdr = (struct ether_hdr*)buf;
+    struct ip_hdr* ip_hdr = (struct ip_hdr*)(buf + sizeof(struct ether_hdr));
+    struct ether_hdr* new_eth_hdr = (struct ether_hdr*)new_buf;
+    struct ip_hdr* new_ip_hdr = (struct ip_hdr*)(new_buf + sizeof(struct ether_hdr));
+    struct icmp_hdr* new_icmp_hdr = (struct icmp_hdr*)(new_buf + sizeof(struct ether_hdr) + sizeof(struct ip_hdr));
+
+    //update Ethernet header
+    memcpy(new_eth_hdr->ethr_dhost, eth_hdr->ethr_shost, 6);
+    get_interface_mac(interface, new_eth_hdr->ethr_shost);
+    new_eth_hdr->ethr_type = htons(IPV4_ETHERTYPE);
+
+    //update IP header
+    new_ip_hdr->ver = 4;
+    new_ip_hdr->ihl = 5;
+    new_ip_hdr->tos = 0;
+    new_ip_hdr->tot_len = htons(sizeof(struct ip_hdr) + sizeof(struct icmp_hdr) + sizeof(struct ip_hdr) + 8);
+    new_ip_hdr->id = htons(4);
+    new_ip_hdr->frag = htons(0);
+    new_ip_hdr->ttl = 64;
+    new_ip_hdr->proto = IPPROTO_ICMP;
+    new_ip_hdr->source_addr = inet_addr(get_interface_ip(interface));
+    new_ip_hdr->dest_addr = ip_hdr->source_addr;
+    new_ip_hdr->checksum = 0;
+    new_ip_hdr->checksum = htons(checksum((uint16_t*)new_ip_hdr, sizeof(struct ip_hdr)));
+
+    //update ICMP header
+    new_icmp_hdr->mtype = 3; // host unreachable
+    new_icmp_hdr->mcode = 0;
+    new_icmp_hdr->check = 0;
+
+    memcpy((uint8_t*)new_icmp_hdr + sizeof(struct icmp_hdr), ip_hdr, sizeof(struct ip_hdr) + 8);
+
+    new_icmp_hdr->check = checksum((uint16_t*)new_icmp_hdr, sizeof(struct icmp_hdr) + sizeof(struct ip_hdr) + 8);
+
+    if (send_to_link(sizeof(struct ether_hdr) + sizeof(struct ip_hdr) + sizeof(struct icmp_hdr) + sizeof(struct ip_hdr) + 8, (char*)new_buf
+        , interface) < 0)
     {
         exit(EXIT_FAILURE);
     }
@@ -169,14 +215,14 @@ int validate_and_update_ttl(struct ip_hdr* ip_hdr, char* buf, size_t len, size_t
     if (old_checksum != calculated_checksum)
     {
         printf("Invalid checksum: old=%hu, calculated=%hu\n", old_checksum, calculated_checksum);
-        printf("Htons old checksum: %hu\n", ntohs(old_checksum));
+        printf("Ntohs old checksum: %hu\n", ntohs(old_checksum));
         return 0;
     }
 
-    if (ip_hdr->ttl <= 0)
+    if (ip_hdr->ttl <= 1)
     {
         printf("TTL expired\n");
-        // icmp ttl<0
+        // icmp ttl<1
         handle_ttl_exceeded(buf, len, interface);
         return 0;
     }
@@ -345,6 +391,7 @@ int main(int argc, char* argv[])
         if (linear_match == NULL)
         {
             printf("No match found in by linear search\n");
+            handle_host_unreachable(buf, len, interface);
             continue;
         }
         /*printf("Lin match is %d , next hop: %u\n", linear_match->interface, linear_match->next_hop);
