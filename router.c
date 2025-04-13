@@ -406,10 +406,10 @@ void handle_arp_message(size_t len, size_t interface, char* buf, queue* que, int
                     memcpy(eth_hdr->ethr_dhost, arp_table[j].mac, 6);
                     printf("ARP table match found: %s\n", inet_ntoa(*(struct in_addr*)&arp_table[j].ip));
                     printf("Sent to MAC address: ");
-                    for (int i = 0; i < 6; i++)
+                    for (int k = 0; k < 6; k++)
                     {
-                        printf("%02x", mac[i]);
-                        if (i < 5)
+                        printf("%02x", mac[k]);
+                        if (k < 5)
                             printf(":");
                     }
                     printf("\n");
@@ -519,7 +519,7 @@ int main(int argc, char* argv[])
 
         if (!validate_and_update_ttl(ip_header, buf, len, interface))
         {
-            //also handles ICMP response if ttl <=0
+            //also handles ICMP response if ttl <=1
             printf("Packet dropped due to invalid checksum or TTL expiration\n");
             continue;
         }
@@ -539,8 +539,6 @@ int main(int argc, char* argv[])
 
         //lpm
         struct route_table_entry* match = lpm(root, ip_header->dest_addr);
-        struct route_table_entry* linear_match = linear_best_match(ip_header->dest_addr);
-
         if (match == NULL)
         {
             printf("No match found in by lpm\n");
@@ -550,7 +548,6 @@ int main(int argc, char* argv[])
 
         struct in_addr next_hop_addr;
         next_hop_addr.s_addr = match->next_hop;
-        printf("LIN match is %d , next hop: %s\n", linear_match->interface, inet_ntoa(*(struct in_addr*)&linear_match->next_hop));
         printf("LPM match is %d , next hop: %s\n", match->interface, inet_ntoa(next_hop_addr));
 
         //proper arp check-up
@@ -596,6 +593,7 @@ int main(int argc, char* argv[])
             memcpy(alloc_buf, buf, len);
             queue_length++;
             queue_enq(message_queue, alloc_buf - sizeof(size_t));
+            //enqueue message to attempt to forward when mac is found from arp responses
         }
     }
 
