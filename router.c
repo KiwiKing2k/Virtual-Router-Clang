@@ -47,6 +47,14 @@ int is_valid_l2_packet(struct ether_hdr* eth_hdr, size_t interface)
             printf(":");
     }
     printf("\n");
+    printf("My MAC address: ");
+    for (int i = 0; i < 6; i++)
+    {
+        printf("%02x", interface_mac[i]);
+        if (i < 5)
+            printf(":");
+    }
+    printf("\n");
     printf("MAC adress not for me\n");
     return 0;
 }
@@ -148,19 +156,20 @@ void handle_ttl_exceeded(char* buf, size_t len, size_t interface)
     printf("Sent ICMP Time Exceeded error\n");
 }
 
-int validate_and_update_ttl(struct ip_hdr* ip_hdr,char* buf, size_t len, size_t interface)
+int validate_and_update_ttl(struct ip_hdr* ip_hdr, char* buf, size_t len, size_t interface)
 {
     // Save the old checksum
     uint16_t old_checksum = ntohs(ip_hdr->checksum);
     ip_hdr->checksum = 0;
 
     // Calculate the checksum
-    uint16_t calculated_checksum = checksum((uint16_t*)ip_hdr, ip_hdr->ihl * 4);
+    uint16_t calculated_checksum = checksum((uint16_t*)ip_hdr, sizeof(struct ip_hdr));
 
     // Check if the checksum is valid
     if (old_checksum != calculated_checksum)
     {
         printf("Invalid checksum: old=%hu, calculated=%hu\n", old_checksum, calculated_checksum);
+        printf("Htons old checksum: %hu\n", ntohs(old_checksum));
         return 0;
     }
 
@@ -173,9 +182,9 @@ int validate_and_update_ttl(struct ip_hdr* ip_hdr,char* buf, size_t len, size_t 
     }
     ip_hdr->ttl--;
 
-    ip_hdr->checksum=0;
+    ip_hdr->checksum = 0;
     //update checksum
-    ip_hdr->checksum = checksum((uint16_t*)ip_hdr, ip_hdr->ihl * 4);
+    ip_hdr->checksum = htons(checksum((uint16_t*)ip_hdr, sizeof(struct ip_hdr)));
 
     return 1;
 }
@@ -268,7 +277,7 @@ int main(int argc, char* argv[])
 
     // reading routing table and making a trie
     struct node* root = create_node();
-    rtable_len=read_rtable(argv[1], rtable);
+    rtable_len = read_rtable(argv[1], rtable);
     printf("Routing table length: %d\n", rtable_len);
     for (int i = 0; i < rtable_len; i++)
     {
@@ -286,12 +295,16 @@ int main(int argc, char* argv[])
 
         interface = recv_from_any_link(buf, &len);
         DIE(interface < 0, "recv_from_any_links");
-        if (is_packet_too_short(len)) exit(EXIT_FAILURE);
+        if (is_packet_too_short(len))
+        {
+            printf("Short packet detected opinion rejected\n;");
+            continue;
+        }
 
         struct ether_hdr* eth_hdr = (struct ether_hdr*)buf;
         struct ip_hdr* ip_hdr = (struct ip_hdr*)(buf + sizeof(struct ether_hdr));
 
-        if (!is_valid_l2_packet(eth_hdr, interface)) exit(EXIT_FAILURE);
+        if (!is_valid_l2_packet(eth_hdr, interface)) continue; // if it is not sent for my mac, then continue
 
         printf("Received packet on interface %zu\n", interface);
 
@@ -304,16 +317,15 @@ int main(int argc, char* argv[])
         //check if it is for me
 
         uint32_t router_ip = inet_addr(get_interface_ip(interface));
-        printf("Received router IP: %x\n", router_ip);
-        printf("Destination Interface ip: %x\n", ip_hdr->dest_addr);
-        if (ip_hdr->dest_addr == router_ip)
+        printf("Received packet from IP: %x\n", router_ip);
+        printf("Destination Interface ip: %x\n", ntohl(ip_hdr->dest_addr));
+        if (ntohl(ip_hdr->dest_addr) == router_ip)
         {
             // Call the handle_icmp function
             handle_icmp_echo(buf, len, interface);
             continue;
         }
 
-        printf("Am trecut de icmp echo\n");
         if (!validate_and_update_ttl(ip_hdr, buf, len, interface))
         {
             //also handles ICMP response if ttl <=0
@@ -325,37 +337,45 @@ int main(int argc, char* argv[])
         struct route_table_entry* match = lpm(root, ip_hdr->dest_addr);
         struct route_table_entry* linear_match = linear_best_match(ip_hdr->dest_addr);
 
-        printf("Lin match is %d , %u\n", linear_match->interface, linear_match->next_hop);
-        printf("Aici mere?\n");
-        /*printf("LPM match is %d , %u\n", match->interface, match->next_hop);*/
-
-        printf("Ajungem aici?");
-
-        if (match->next_hop != linear_match->next_hop)
-        {
-            printf("My LPM sucks\n");
-        }
-        else
-        {
-            printf("My LPM doesnt suck\n");
-        }
-
         if (match == NULL)
         {
-            continue;
-            //aruncam pachetul
+            printf("No match found in by lpm\n");
+            match = linear_match;
         }
+        if (linear_match == NULL)
+        {
+            printf("No match found in by linear search\n");
+            continue;
+        }
+        /*printf("Lin match is %d , next hop: %u\n", linear_match->interface, linear_match->next_hop);
+        printf("LPM match is %d , next hop:  %u\n", match->interface, match->next_hop);*/
+
+        struct in_addr next_hop_addr;
+        next_hop_addr.s_addr = match->next_hop;
+        printf("Lin match is %d , next hop: %s\n", linear_match->interface, inet_ntoa(*(struct in_addr*)&linear_match->next_hop));
+        printf("LPM match is %d , next hop: %s\n", match->interface, inet_ntoa(next_hop_addr));
 
         //arp to be implemented
         for (int i = 0; i < 6; i++)
         {
             if (arp_table[i].ip == match->next_hop)
             {
+                printf("Found match in ARP table\n");
                 uint8_t mac[6];
                 get_interface_mac(match->interface, mac);
                 memcpy(eth_hdr->ethr_shost, mac, 6);
                 memcpy(eth_hdr->ethr_dhost, arp_table[i].mac, 6);
+                printf("ARP table match found: %s\n", inet_ntoa(*(struct in_addr*)&arp_table[i].ip));
+                printf("Sent to MAC address: ");
+                for (int i = 0; i < 6; i++)
+                {
+                    printf("%02x", mac[i]);
+                    if (i < 5)
+                        printf(":");
+                }
+                printf("\n");
                 if (send_to_link(len, buf, match->interface) < 0) exit(EXIT_FAILURE);
+                printf("Sent packet to interface %d\n", match->interface);
                 break;
             }
         }
