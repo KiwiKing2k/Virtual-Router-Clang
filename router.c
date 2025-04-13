@@ -319,7 +319,8 @@ struct route_table_entry* lpm(struct node* root, uint32_t ip)
     return best_entry;
 }
 
-void handle_arp_message(size_t len, size_t interface, char* buf)
+void handle_arp_message(size_t len, size_t interface, char* buf, queue* que, int* queue_len, struct arp_table_entry* arp_table, int*
+                        arp_table_len)
 {
     struct arp_hdr* arp_header = (struct arp_hdr*)(buf + sizeof(struct ether_hdr));
     if (ntohs(arp_header->opcode) == 1)
@@ -332,21 +333,101 @@ void handle_arp_message(size_t len, size_t interface, char* buf)
         memcpy(arp_header->thwa, arp_header->shwa, 6);
         memcpy(arp_header->shwa, mac, 6);
 
-        uint8_t cup = arp_header->tprotoa;
+        uint32_t cup = arp_header->tprotoa;
         arp_header->tprotoa = arp_header->sprotoa;
         arp_header->sprotoa = cup;
         // 2 values 1 cup
 
+        printf("Replied arp to ip: %s\n", inet_ntoa(*(struct in_addr*)&arp_header->tprotoa));
+        printf("Replied arp with mac:");
+        for (int i = 0; i < 6; i++)
+        {
+            printf("%02x", mac[i]);
+            if (i < 5)
+                printf(":");
+        }
+        printf("\n");
         struct ether_hdr* ether_header = (struct ether_hdr*)buf;
         memcpy(ether_header->ethr_dhost, ether_header->ethr_shost, 6);
         memcpy(ether_header->ethr_shost, mac, 6);
-        if (send_to_link(len, buf, interface)<0) exit(EXIT_FAILURE);
+        if (send_to_link(len, buf, interface) < 0) exit(EXIT_FAILURE);
     }
     else
     {
-        //reply
+        //receive reply
+        if ((*arp_table_len) > 6)
+        {
+            printf("Receiving more than 6 arp table entries\n");
+            exit(EXIT_FAILURE);
+        }
+        arp_table[(*arp_table_len)].ip = arp_header->sprotoa;
+        memcpy(arp_table[(*arp_table_len)].mac, arp_header->shwa, 6);
+        (*arp_table_len)++;
+        //start dequeing and checking then requeing
+        for (int i = 0; i < *queue_len; i++)
+        {
+            char* buf = queue_deq(*que);
+            struct ether_hdr* eth_hdr = (struct ether_hdr*)buf;
+            struct ip_hdr* ip_hdr = (struct ip_hdr*)(buf + sizeof(struct ether_hdr));
+            struct icmp_hdr* icmp_hdr = (struct icmp_hdr*)(buf + sizeof(struct ether_hdr) + sizeof(struct ip_hdr));
+            struct route_table_entry* match = linear_best_match(ip_hdr->dest_addr);
+            int found=0;
+            for (int j = 0; j < *arp_table_len; j++)
+            {
+                if (arp_table[j].ip == match->next_hop)
+                {
+                    printf("Found match in ARP table\n");
+                    uint8_t mac[6];
+                    get_interface_mac(match->interface, mac);
+                    memcpy(eth_hdr->ethr_shost, mac, 6);
+                    memcpy(eth_hdr->ethr_dhost, arp_table[j].mac, 6);
+                    printf("ARP table match found: %s\n", inet_ntoa(*(struct in_addr*)&arp_table[j].ip));
+                    printf("Sent to MAC address: ");
+                    for (int i = 0; i < 6; i++)
+                    {
+                        printf("%02x", mac[i]);
+                        if (i < 5)
+                            printf(":");
+                    }
+                    printf("\n");
+                    //maybe update checksum?
+                    icmp_hdr->check = 0;
+                    icmp_hdr->check = htons(checksum((uint16_t*)icmp_hdr, sizeof(struct icmp_hdr)));
+                    ip_hdr->checksum = 0;
+                    ip_hdr->checksum = htons(checksum((uint16_t*)ip_hdr, sizeof(struct ip_hdr)));
+                    if (send_to_link(len, buf, match->interface) < 0) exit(EXIT_FAILURE);
+                    printf("Sent packet to interface %d\n", match->interface);
+                    found++;
+                    break;
+                }
+            }
+            if (!found) queue_enq(*que, buf);
+        }
     }
 }
+
+void send_arp_request(struct route_table_entry* match)
+{
+    char new_buf[MAX_PACKET_LEN];
+    struct ether_hdr* eth_hdr = (struct ether_hdr*)new_buf;
+    struct arp_hdr* arp_header = (struct arp_hdr*)(new_buf + sizeof(struct ether_hdr));
+    arp_header->hw_type = htons(1);
+    arp_header->proto_type = htons(IPV4_ETHERTYPE);
+    arp_header->hw_len = 6;
+    arp_header->proto_len = 4;
+    arp_header->opcode = htons(1);
+    get_interface_mac(match->interface, arp_header->shwa);
+    memset(arp_header->thwa, 0, 6);
+    arp_header->sprotoa = inet_addr(get_interface_ip(match->interface));
+    arp_header->tprotoa = match->next_hop;
+    eth_hdr->ethr_type = htons(ARP_ETHERTYPE);
+    uint8_t broadcast_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+    memcpy(eth_hdr->ethr_dhost, broadcast_mac, 6);
+    memcpy(eth_hdr->ethr_shost, arp_header->shwa, 6);
+    printf("Sending ARP request to find: %s\n", inet_ntoa(*(struct in_addr*)&arp_header->tprotoa));
+    if (send_to_link(sizeof(struct ether_hdr) + sizeof(struct arp_hdr), new_buf, match->interface) < 0) exit(EXIT_FAILURE);
+}
+
 
 int main(int argc, char* argv[])
 {
@@ -367,8 +448,12 @@ int main(int argc, char* argv[])
     }
     //
     struct arp_table_entry* arp_table = malloc(sizeof(struct arp_table_entry) * 6);
-    if (!parse_arp_table("arp_table.txt", arp_table)) exit(EXIT_FAILURE);
+    int arp_table_len = 0;
+    /*if (!parse_arp_table("arp_table.txt", arp_table)) exit(EXIT_FAILURE);*/
     //
+
+    queue message_queue = create_queue();
+    int queue_length = 1;
 
     while (1)
     {
@@ -384,7 +469,7 @@ int main(int argc, char* argv[])
         }
 
         struct ether_hdr* eth_hdr = (struct ether_hdr*)buf;
-        struct ip_hdr* ip_hdr = (struct ip_hdr*)(buf + sizeof(struct ether_hdr));
+        struct ip_hdr* ip_header = (struct ip_hdr*)(buf + sizeof(struct ether_hdr));
 
         if (!is_valid_l2_packet(eth_hdr, interface)) continue; // if it is not sent for my mac, then continue
 
@@ -392,7 +477,9 @@ int main(int argc, char* argv[])
 
         if (ntohs(eth_hdr->ethr_type) == ARP_ETHERTYPE)
         {
-            // handle_arp
+            printf("Handling ARP packet\n");
+            handle_arp_message(len, interface, buf, &message_queue, &queue_length, arp_table, &arp_table_len);
+            continue;
         }
         if (ntohs(eth_hdr->ethr_type) != IPV4_ETHERTYPE)
         {
@@ -403,16 +490,16 @@ int main(int argc, char* argv[])
         //check if it is for me
 
         uint32_t router_ip = inet_addr(get_interface_ip(interface));
-        printf("Received packet from IP: %x\n", router_ip);
-        printf("Destination Interface ip: %x\n", ntohl(ip_hdr->dest_addr));
-        if (ntohl(ip_hdr->dest_addr) == router_ip)
+        printf("Received IPv4 packet from IP: %x\n", router_ip);
+        printf("Destination Interface ip: %x\n", ntohl(ip_header->dest_addr));
+        if (ip_header->dest_addr == router_ip)
         {
             // Call the handle_icmp function
             handle_icmp_echo(buf, len, interface);
             continue;
         }
 
-        if (!validate_and_update_ttl(ip_hdr, buf, len, interface))
+        if (!validate_and_update_ttl(ip_header, buf, len, interface))
         {
             //also handles ICMP response if ttl <=0
             printf("Packet dropped due to invalid checksum or TTL expiration\n");
@@ -420,8 +507,8 @@ int main(int argc, char* argv[])
         }
         printf("Am trecut de ttl\n");
         //lpm
-        struct route_table_entry* match = lpm(root, ip_hdr->dest_addr);
-        struct route_table_entry* linear_match = linear_best_match(ip_hdr->dest_addr);
+        struct route_table_entry* match = lpm(root, ip_header->dest_addr);
+        struct route_table_entry* linear_match = linear_best_match(ip_header->dest_addr);
 
         if (match == NULL)
         {
@@ -441,8 +528,8 @@ int main(int argc, char* argv[])
         printf("LIN match is %d , next hop: %s\n", linear_match->interface, inet_ntoa(*(struct in_addr*)&linear_match->next_hop));
         printf("LPM match is %d , next hop: %s\n", match->interface, inet_ntoa(next_hop_addr));
 
-        //arp to be implemented
-        for (int i = 0; i < 6; i++)
+        //this is if arp table is made in main
+        /*for (int i = 0; i < 6; i++)
         {
             if (arp_table[i].ip == match->next_hop)
             {
@@ -464,6 +551,50 @@ int main(int argc, char* argv[])
                 printf("Sent packet to interface %d\n", match->interface);
                 break;
             }
+        }*/
+
+        //proper arp fuckery
+        int found = 0;
+        for (int i = 0; i <= arp_table_len; i++)
+        {
+            if (arp_table[i].ip == match->next_hop)
+            {
+                printf("Found ARP table match at mac: ");
+                for (int i = 0; i < 6; i++)
+                {
+                    printf("%02x", arp_table->mac[i]);
+                    if (i < 5)
+                        printf(":");
+                }
+                found = 1;
+                //send packet to match mac
+                uint8_t mac[6];
+                get_interface_mac(match->interface, mac);
+                memcpy(eth_hdr->ethr_shost, mac, 6);
+                memcpy(eth_hdr->ethr_dhost, arp_table[i].mac, 6);
+                printf("ARP table match found: %s\n", inet_ntoa(*(struct in_addr*)&arp_table[i].ip));
+                printf("Sent to MAC address: ");
+                for (int i = 0; i < 6; i++)
+                {
+                    printf("%02x", mac[i]);
+                    if (i < 5)
+                        printf(":");
+                }
+                printf("\n");
+                //update checksum
+                struct icmp_hdr* icmp_hdr = (struct icmp_hdr*)(buf + sizeof(struct ether_hdr) + sizeof(struct ip_hdr));
+                icmp_hdr->check = 0;
+                icmp_hdr->check = htons(checksum((uint16_t*)icmp_hdr, sizeof(struct icmp_hdr)));
+                if (send_to_link(len, buf, match->interface) < 0) exit(EXIT_FAILURE);
+                break;
+            }
+        }
+        if (!found)
+        {
+            send_arp_request(match);
+            char* alloc_buf = (char*)malloc(len);
+            memcpy(alloc_buf, buf, len);
+            queue_enq(message_queue, alloc_buf);
         }
     }
 
