@@ -553,32 +553,7 @@ int main(int argc, char* argv[])
         printf("LIN match is %d , next hop: %s\n", linear_match->interface, inet_ntoa(*(struct in_addr*)&linear_match->next_hop));
         printf("LPM match is %d , next hop: %s\n", match->interface, inet_ntoa(next_hop_addr));
 
-        //this is if arp table is made in main
-        /*for (int i = 0; i < 6; i++)
-        {
-            if (arp_table[i].ip == match->next_hop)
-            {
-                printf("Found match in ARP table\n");
-                uint8_t mac[6];
-                get_interface_mac(match->interface, mac);
-                memcpy(eth_hdr->ethr_shost, mac, 6);
-                memcpy(eth_hdr->ethr_dhost, arp_table[i].mac, 6);
-                printf("ARP table match found: %s\n", inet_ntoa(*(struct in_addr*)&arp_table[i].ip));
-                printf("Sent to MAC address: ");
-                for (int i = 0; i < 6; i++)
-                {
-                    printf("%02x", mac[i]);
-                    if (i < 5)
-                        printf(":");
-                }
-                printf("\n");
-                if (send_to_link(len, buf, match->interface) < 0) exit(EXIT_FAILURE);
-                printf("Sent packet to interface %d\n", match->interface);
-                break;
-            }
-        }*/
-
-        //proper arp fuckery
+        //proper arp check-up
         printf("Received packet length: %zu\n", len);
         int found = 0;
         for (int i = 0; i <= arp_table_len; i++)
@@ -624,11 +599,4 @@ int main(int argc, char* argv[])
         }
     }
 
-
-    //  Implement the router forwarding logic
-
-    /* Note that packets received are in network order,
-        any header field which has more than 1 byte will need to be conerted to
-        host order. For example, ntohs(eth_hdr->ether_type). The oposite is needed when
-        sending a packet on the link, */
 }
